@@ -3,54 +3,87 @@ from app.data_loader import load_data
 
 def detect_anomalies():
     """
-    Detect anomalies in support tickets.
+    Detect support ticket anomalies.
 
     Rule 1:
     Critical tickets that are not resolved.
 
     Rule 2:
-    Tickets with unusually high resolution times
-    (greater than mean + 2 * standard deviation).
+    Tickets whose resolution time exceeds:
+    mean + 2 * standard deviations.
     """
 
     df = load_data()
 
-    anomalies = {}
+    # -----------------------------------------
+    # Critical Unresolved Tickets
+    # -----------------------------------------
 
-    # Critical unresolved tickets
     critical_unresolved = df[
         (df["priority"] == "Critical")
         & (df["status"] != "Resolved")
     ]
 
-    anomalies["critical_unresolved"] = critical_unresolved
+    # -----------------------------------------
+    # Long Resolution Tickets
+    # -----------------------------------------
 
-    # Long resolution time tickets
-    resolved_df = df[df["resolution_time_hrs"].notna()]
-
-    mean_time = resolved_df["resolution_time_hrs"].mean()
-    std_time = resolved_df["resolution_time_hrs"].std()
-
-    threshold = mean_time + (2 * std_time)
-
-    long_resolution = resolved_df[
-        resolved_df["resolution_time_hrs"] > threshold
+    resolved_df = df[
+        df["resolution_time_hrs"].notna()
     ]
 
-    anomalies["long_resolution"] = long_resolution
+    mean_time = (
+        resolved_df["resolution_time_hrs"]
+        .mean()
+    )
 
-    return anomalies
+    std_time = (
+        resolved_df["resolution_time_hrs"]
+        .std()
+    )
+
+    threshold = mean_time + (
+        2 * std_time
+    )
+
+    long_resolution = resolved_df[
+        resolved_df["resolution_time_hrs"]
+        > threshold
+    ]
+
+    # -----------------------------------------
+    # Return Summary
+    # -----------------------------------------
+
+    return {
+        "critical_unresolved_count":
+            len(critical_unresolved),
+
+        "long_resolution_count":
+            len(long_resolution),
+
+        "critical_unresolved_tickets":
+            critical_unresolved.to_dict(
+                orient="records"
+            ),
+
+        "long_resolution_tickets":
+            long_resolution.to_dict(
+                orient="records"
+            )
+    }
 
 
 if __name__ == "__main__":
-    anomalies = detect_anomalies()
+
+    results = detect_anomalies()
 
     print(
         f"Critical Unresolved Tickets: "
-        f"{len(anomalies['critical_unresolved'])}"
+        f"{results['critical_unresolved_count']}"
     )
 
     print(
         f"Long Resolution Tickets: "
-        f"{len(anomalies['long_resolution'])}"
+        f"{results['long_resolution_count']}"
     )

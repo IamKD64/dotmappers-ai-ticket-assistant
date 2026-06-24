@@ -1,147 +1,214 @@
-from app.data_loader import load_data
+import pandas as pd
+from app.llm_service import ask_llm
 
 
-def process_query(question: str):
-    """
-    Process natural language queries against support ticket data.
-    """
+class QueryEngine:
+    def __init__(self, df):
+        self.df = df
 
-    df = load_data()
+    def execute_query(self, question: str):
 
-    question = question.lower().strip()
+        # ==================================================
+        # Special Handling for Anomaly Questions
+        # ==================================================
 
-    # -------------------------
-    # Ticket Counts
-    # -------------------------
+        if any(word in question.lower() for word in [
+            "anomaly",
+            "anomalies",
+            "outlier",
+            "unusual"
+        ]):
 
-    if question == "total tickets":
-        return f"Total tickets: {len(df)}"
-
-    elif question == "open tickets":
-        count = len(df[df["status"] == "Open"])
-        return f"Open tickets: {count}"
-
-    elif (
-        "critical" in question
-        and "unresolved" in question
-    ):
-        count = len(
-            df[
-                (df["priority"] == "Critical")
-                & (df["status"] != "Resolved")
+            anomalies = self.df[
+                self.df["resolution_time_hrs"]
+                >
+                self.df["resolution_time_hrs"].quantile(0.95)
             ]
+
+            return {
+                "question": question,
+                "answer": f"Found {len(anomalies)} tickets with unusually high resolution times.",
+                "raw_result": anomalies.head(10).to_string()
+            }
+
+        # ==================================================
+        # Schema Context
+        # ==================================================
+
+        schema = f"""
+Dataset Columns:
+{list(self.df.columns)}
+
+Column Meanings:
+
+ticket_id - ticket identifier
+created_at - ticket creation date
+category - Billing / Technical / General
+priority - Low / Medium / High / Critical
+status - Open / Resolved / Escalated
+response_time_hrs - first response time
+resolution_time_hrs - resolution duration
+agent_id - assigned agent
+customer_rating - customer satisfaction rating
+issue_summary - ticket description
+"""
+
+        # ==================================================
+        # Query Generation Prompt
+        # ==================================================
+
+        prompt = f"""
+You are a Python Pandas expert.
+
+{schema}
+
+DataFrame Name:
+df
+
+User Question:
+{question}
+
+IMPORTANT RULES:
+
+- Use exact column names.
+- DataFrame name is df.
+- Store final output in variable result.
+- Return ONLY executable pandas code.
+- No markdown.
+- No explanations.
+- No comments.
+- No print statements.
+
+Special Rules:
+
+- Critical tickets => priority == "Critical"
+- Unresolved tickets => status != "Resolved"
+- Open tickets => status == "Open"
+- Resolved tickets => status == "Resolved"
+
+Examples:
+
+result = df[df["status"]=="Open"].shape[0]
+
+result = df[
+    (df["priority"]=="Critical") &
+    (df["status"]!="Resolved")
+]
+
+result = (
+    df.groupby("agent_id")["customer_rating"]
+      .mean()
+      .sort_values(ascending=False)
+      .head(5)
+)
+
+result = (
+    df.groupby("category")["customer_rating"]
+      .mean()
+      .idxmax()
+)
+
+result = (
+    df.groupby("agent_id")
+      .agg({{
+          "customer_rating":"mean",
+          "response_time_hrs":"mean",
+          "resolution_time_hrs":"mean"
+      }})
+)
+"""
+
+        # ==================================================
+        # Generate Pandas Code
+        # ==================================================
+
+        code = ask_llm(prompt)
+
+        code = (
+            code.replace("```python", "")
+            .replace("```", "")
+            .strip()
         )
 
-        return f"Critical unresolved tickets: {count}"
+        local_vars = {
+            "df": self.df.copy(),
+            "pd": pd
+        }
 
-    elif question == "resolved tickets":
-        count = len(df[df["status"] == "Resolved"])
-        return f"Resolved tickets: {count}"
+        try:
 
-    # -------------------------
-    # Customer Ratings
-    # -------------------------
+            print("\n" + "=" * 60)
+            print("QUESTION:")
+            print(question)
 
-    elif "average rating" in question:
-        avg_rating = round(
-            df["customer_rating"].mean(),
-            2
-        )
+            print("\nGENERATED CODE:")
+            print(code)
 
-        return (
-            f"Average customer rating: "
-            f"{avg_rating}"
-        )
+            exec(code, {}, local_vars)
 
-    # -------------------------
-    # Category Analysis
-    # -------------------------
+            result = local_vars.get("result")
 
-    elif (
-        "category" in question
-        and "most tickets" in question
-    ):
+            print("\nRESULT TYPE:")
+            print(type(result))
 
-        category_counts = df["category"].value_counts()
+            print("\nRESULT:")
+            print(result)
 
-        top_category = category_counts.idxmax()
-        top_count = category_counts.max()
+            print("=" * 60 + "\n")
 
-        return (
-            f"Category with most tickets: "
-            f"{top_category} "
-            f"({top_count} tickets)"
-        )
+            # ==================================================
+            # Explanation Prompt
+            # ==================================================
 
-    # -------------------------
-    # Agent Analysis
-    # -------------------------
+            explanation_prompt = f"""
+You are analyzing a customer support dataset.
 
-    elif (
-        "highest rating" in question
-        and "agent" in question
-    ):
+Question:
+{question}
 
-        agent_ratings = (
-            df.groupby("agent_id")["customer_rating"]
-            .mean()
-        )
+Actual Data Result:
+{result}
 
-        best_agent = agent_ratings.idxmax()
-        best_rating = round(
-            agent_ratings.max(),
-            2
-        )
+Instructions:
 
-        return (
-            f"Highest rated agent: "
-            f"{best_agent} "
-            f"({best_rating})"
-        )
+1. Use ONLY the supplied result.
+2. Do NOT use generic industry knowledge.
+3. Mention actual values from the result.
+4. Keep answer concise.
+5. Explain what the result means.
+6. Maximum 100 words.
 
-    elif (
-        "most tickets" in question
-        and "agent" in question
-    ):
+Answer:
+"""
 
-        agent_counts = (
-            df["agent_id"]
-            .value_counts()
-        )
+            final_answer = ask_llm(explanation_prompt)
 
-        top_agent = agent_counts.idxmax()
-        top_count = agent_counts.max()
+            # ==================================================
+            # Clean Result Preview
+            # ==================================================
 
-        return (
-            f"Agent handling most tickets: "
-            f"{top_agent} "
-            f"({top_count} tickets)"
-        )
+            if isinstance(result, pd.DataFrame):
+                result_preview = result.head(10).to_string()
 
-    # -------------------------
-    # Unknown Question
-    # -------------------------
+            elif isinstance(result, pd.Series):
+                result_preview = result.head(10).to_string()
 
-    return (
-        "Sorry, I couldn't understand that question. "
-        "Try asking about total tickets, open tickets, "
-        "resolved tickets, ratings, categories, or agents."
-    )
+            else:
+                result_preview = str(result)
 
+            return {
+                "question": question,
+                "answer": final_answer,
+                "raw_result": result_preview
+            }
 
-if __name__ == "__main__":
+        except Exception as e:
 
-    test_questions = [
-        "total tickets",
-        "open tickets",
-        "resolved tickets",
-        "critical unresolved tickets",
-        "average rating",
-        "which category has most tickets",
-        "which agent has highest rating",
-        "which agent handles most tickets",
-    ]
+            print("\nEXECUTION ERROR:")
+            print(str(e))
 
-    for q in test_questions:
-        print(f"\nQuestion: {q}")
-        print(process_query(q))
+            return {
+                "question": question,
+                "answer": f"Failed to execute query: {str(e)}",
+                "raw_result": None
+            }
